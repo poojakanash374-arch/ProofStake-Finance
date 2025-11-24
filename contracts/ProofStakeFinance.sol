@@ -1,18 +1,7 @@
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
-
-/**
- * @title ProofStake Finance
- * @dev Decentralized staking platform with rewards distribution and automated yield generation
- */
-contract ProofStakeFinance {
-    
-    // State variables
+State variables
     address public owner;
     uint256 public totalStaked;
-    uint256 public rewardRate; // Reward percentage per period (basis points, 100 = 1%)
-    uint256 public minStakeAmount;
-    uint256 public lockPeriod; // Lock period in seconds
+    uint256 public rewardRate; Lock period in seconds
     uint256 public totalRewardsDistributed;
     
     struct Stake {
@@ -26,17 +15,7 @@ contract ProofStakeFinance {
     mapping(address => bool) public isStaker;
     address[] public stakers;
     
-    // Events
-    event Staked(address indexed user, uint256 amount, uint256 timestamp);
-    event Unstaked(address indexed user, uint256 amount, uint256 rewards, uint256 timestamp);
-    event RewardsClaimed(address indexed user, uint256 amount, uint256 timestamp);
-    event RewardRateUpdated(uint256 oldRate, uint256 newRate);
-    event MinStakeAmountUpdated(uint256 oldAmount, uint256 newAmount);
-    event LockPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
-    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
-    event RewardsDeposited(address indexed depositor, uint256 amount, uint256 timestamp);
-    
-    // Modifiers
+    Modifiers
     modifier onlyOwner() {
         require(msg.sender == owner, "Only owner can call this function");
         _;
@@ -331,3 +310,6 @@ contract ProofStakeFinance {
         emit RewardsDeposited(msg.sender, msg.value, block.timestamp);
     }
 }
+// 
+End
+// 
