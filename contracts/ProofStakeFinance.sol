@@ -1,144 +1,112 @@
-------------------------------------------------
-    ------------------------------------------------
-    struct Validator {
-        address addr;              total stake by validator
-        bool active;               token people stake
-    IERC20 public rewardToken;     accumulated reward per staked token (scaled)
-    uint256 public constant PRECISION = 1e18;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.26;
 
-    mapping(address => uint256) public stakeOf;
-    mapping(address => uint256) public rewardDebt;
+/**
+ * @title ProofStake Finance
+ * @notice A decentralized ETH staking & reward distribution protocol
+ * @dev Users stake ETH and earn rewards. Owner can inject rewards manually.
+ */
 
-    mapping(address => Validator) public validators;
-    address[] public validatorList;
+contract ProofStakeFinance {
+    struct StakeInfo {
+        uint256 amount;
+        uint256 rewardDebt;
+    }
 
-    uint256 public unstakeCooldownBlocks = 1000; ------------------------------------------------
-    ------------------------------------------------
+    mapping(address => StakeInfo) public stakes;
+    address public owner;
+
+    uint256 public totalStaked;
+    uint256 public accRewardPerShare; // Accumulated rewards per ETH staked (1e12 precision)
+
     event Staked(address indexed user, uint256 amount);
-    event UnstakeRequested(address indexed user, uint256 amount, uint256 requestBlock);
-    event Unstaked(address indexed user, uint256 amount);
-    event RewardPoolFunded(address indexed funder, uint256 amount);
-    event RewardClaimed(address indexed user, uint256 amount);
-    event ValidatorRegistered(address indexed validator);
-    event ValidatorDeregistered(address indexed validator);
-    event ValidatorSlashed(address indexed validator, uint256 amount);
+    event Unstaked(address indexed user, uint256 amount, uint256 reward);
+    event RewardsAdded(uint256 amount);
 
-    MODIFIERS
-    ------------------------------------------------
-    ------------------------------------------------
-    constructor(address _collateralToken, address _rewardToken) {
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner");
+        _;
+    }
+
+    constructor() {
         owner = msg.sender;
-        collateralToken = IERC20(_collateralToken);
-        rewardToken = IERC20(_rewardToken);
     }
 
-    STAKING & REWARD LOGIC
-    update reward debt
-        rewardDebt[msg.sender] = (stakeOf[msg.sender] * rewardPerStakeStored) / PRECISION;
+    // ─────────────────────────────────────────────
+    // ⭐ STAKE ETH
+    // ─────────────────────────────────────────────
+    function stake() external payable {
+        require(msg.value > 0, "Stake amount required");
 
-        emit Staked(msg.sender, amount);
+        StakeInfo storage user = stakes[msg.sender];
+
+        // Pending rewards calculation
+        if (user.amount > 0) {
+            uint256 pending = (user.amount * accRewardPerShare) / 1e12 - user.rewardDebt;
+            payable(msg.sender).transfer(pending);
+        }
+
+        totalStaked += msg.value;
+        user.amount += msg.value;
+
+        // Update reward debt
+        user.rewardDebt = (user.amount * accRewardPerShare) / 1e12;
+
+        emit Staked(msg.sender, msg.value);
     }
 
-    function requestUnstake(uint256 amount) external {
-        require(stakeOf[msg.sender] >= amount, "Too much unstake");
+    // ─────────────────────────────────────────────
+    // ⭐ WITHDRAW (UNSTAKE) + CLAIM REWARDS
+    // ─────────────────────────────────────────────
+    function unstake(uint256 amount) external {
+        StakeInfo storage user = stakes[msg.sender];
+        require(user.amount >= amount, "Not enough staked");
 
-        unstakeRequestBlock[msg.sender] = block.number;
-        unstakeRequestedAmount[msg.sender] = amount;
+        // Calculate pending rewards
+        uint256 pending = (user.amount * accRewardPerShare) / 1e12 - user.rewardDebt;
 
-        emit UnstakeRequested(msg.sender, amount, block.number);
-    }
-
-    function withdrawUnstaked() external {
-        uint256 reqBlock = unstakeRequestBlock[msg.sender];
-        uint256 amount = unstakeRequestedAmount[msg.sender];
-        require(amount > 0, "No pending unstake");
-        require(block.number >= reqBlock + unstakeCooldownBlocks, "Cooldown not passed");
-
-        _updateRewards();
-        _claimReward(msg.sender);
-
-        stakeOf[msg.sender] -= amount;
+        // Update totals
+        user.amount -= amount;
         totalStaked -= amount;
 
-        unstakeRequestedAmount[msg.sender] = 0;
-        unstakeRequestBlock[msg.sender] = 0;
+        // Update reward debt
+        user.rewardDebt = (user.amount * accRewardPerShare) / 1e12;
 
-        collateralToken.transfer(msg.sender, amount);
+        // Transfer staked amount + rewards
+        payable(msg.sender).transfer(amount + pending);
 
-        emit Unstaked(msg.sender, amount);
+        emit Unstaked(msg.sender, amount, pending);
     }
 
-    function fundRewardPool(uint256 amount) external {
-        require(amount > 0, "Zero fund");
-        rewardToken.transferFrom(msg.sender, address(this), amount);
-        Just emit event
-        emit RewardPoolFunded(msg.sender, amount);
+    // ─────────────────────────────────────────────
+    // ⭐ ADD REWARDS TO THE POOL (OWNER ONLY)
+    // ─────────────────────────────────────────────
+    function addRewards() external payable onlyOwner {
+        require(msg.value > 0, "No rewards added");
+        require(totalStaked > 0, "No staking yet");
+
+        // Increase reward per share
+        accRewardPerShare += (msg.value * 1e12) / totalStaked;
+
+        emit RewardsAdded(msg.value);
     }
 
-    function claimReward() external {
-        _updateRewards();
-        _claimReward(msg.sender);
-    }
+    // ─────────────────────────────────────────────
+    // ⭐ VIEW FUNCTIONS
+    // ─────────────────────────────────────────────
+    function pendingRewards(address userAddr) external view returns (uint256) {
+        StakeInfo memory user = stakes[userAddr];
+        uint256 tempAcc = accRewardPerShare;
 
-    function _claimReward(address user) internal {
-        uint256 acc = (stakeOf[user] * rewardPerStakeStored) / PRECISION;
-        uint256 debt = rewardDebt[user];
-        if (acc <= debt) return;
-
-        uint256 payout = acc - debt;
-        rewardDebt[user] = acc;
-        rewardToken.transfer(user, payout);
-
-        emit RewardClaimed(user, payout);
-    }
-
-    function _updateRewards() internal {
-        uint256 bal = rewardToken.balanceOf(address(this));
-        if (totalStaked == 0 || bal == 0) return;
-        over all stakes. In production, you'd have more controlled emission logic.
-        rewardPerStakeStored += (bal * PRECISION) / totalStaked;
-    }
-
-    VALIDATOR REGISTRY & SLASHING
-    Note: does not auto-withdraw stake ? stake remains for user
-        emit ValidatorDeregistered(validatorAddr);
-    }
-
-    /Update global rewards before changing stake
-        _updateRewards();
-        _claimReward(validatorAddr);
-
-        stakeOf[validatorAddr] -= slashAmount;
-        totalStaked -= slashAmount;
-        v.stakeAmount = stakeOf[validatorAddr];
-
-        ------------------------------------------------
-    ------------------------------------------------
-    function pendingReward(address user) external view returns (uint256) {
-        uint256 stored = rewardPerStakeStored;
-        uint256 bal = rewardToken.balanceOf(address(this));
-        if (totalStaked > 0 && bal > 0) {
-            stored += (bal * PRECISION) / totalStaked;
+        // If owner added rewards but not yet updated
+        if (totalStaked > 0) {
+            // No pending reward logic here because addRewards updates immediately
         }
-        uint256 acc = (stakeOf[user] * stored) / PRECISION;
-        uint256 debt = rewardDebt[user];
-        return (acc > debt ? acc - debt : 0);
+
+        return (user.amount * tempAcc) / 1e12 - user.rewardDebt;
     }
 
-    function getValidatorList() external view returns (address[] memory) {
-        return validatorList;
-    }
-
-    ADMIN
-    // ------------------------------------------------
-    function updateUnstakeCooldown(uint256 blocks) external onlyOwner {
-        unstakeCooldownBlocks = blocks;
-    }
-
-    function transferOwnership(address newOwner) external onlyOwner {
-        owner = newOwner;
+    function contractBalance() external view returns (uint256) {
+        return address(this).balance;
     }
 }
-// 
-Contract End
-// 
